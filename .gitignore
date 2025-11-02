@@ -1,0 +1,15 @@
+# Python-related files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.tgz
+*.tar.gz
+*.ini
+
+# Virtual Environment
+.venv/
+venv/
+
+# Enviroment Variable Files
+.env
