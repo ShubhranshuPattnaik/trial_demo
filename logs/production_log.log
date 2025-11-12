@@ -1,0 +1,21 @@
+2025-11-10 20:10:13,604 - INFO - GET http://localhost:9200/ [status:200 request:0.055s]
+2025-11-10 20:10:13,844 - INFO - PUT http://localhost:9200/trials_bm25 [status:200 request:0.222s]
+2025-11-10 20:59:14,263 - INFO - Use pytorch device_name: mps
+2025-11-10 20:59:14,263 - INFO - Load pretrained SentenceTransformer: pritamdeka/S-PubMedBert-MS-MARCO
+2025-11-10 21:07:48,209 - INFO - Use pytorch device_name: mps
+2025-11-10 21:07:48,210 - INFO - Load pretrained SentenceTransformer: pritamdeka/S-PubMedBert-MS-MARCO
+2025-11-10 21:33:14,700 - INFO - Use pytorch device_name: mps
+2025-11-10 21:33:14,701 - INFO - Load pretrained SentenceTransformer: pritamdeka/S-PubMedBert-MS-MARCO
+2025-11-10 21:56:58,746 - WARNING - LLM provider failed (OLLAMA): Extra data: line 2 column 1 (char 125). Falling back to heuristic.
+2025-11-10 21:56:58,750 - INFO - llm_rank_trials provider=OLLAMA model=llama3:8b time_sec=20.18
+2025-11-10 22:02:33,256 - INFO - Use pytorch device_name: mps
+2025-11-10 22:02:33,257 - INFO - Load pretrained SentenceTransformer: pritamdeka/S-PubMedBert-MS-MARCO
+2025-11-10 22:04:24,438 - WARNING - LLM provider failed (OLLAMA): Extra data: line 2 column 1 (char 125). Falling back to heuristic.
+2025-11-10 22:04:24,440 - INFO - llm_rank_trials provider=OLLAMA model=llama3:8b time_sec=21.82
+2025-11-10 22:32:05,497 - INFO - Use pytorch device_name: mps
+2025-11-10 22:32:05,498 - INFO - Load pretrained SentenceTransformer: pritamdeka/S-PubMedBert-MS-MARCO
+2025-11-10 22:34:32,908 - WARNING - LLM provider failed (OLLAMA): Extra data: line 2 column 1 (char 125). Falling back to heuristic.
+2025-11-10 22:34:32,911 - INFO - llm_rank_trials provider=OLLAMA model=llama3:8b time_sec=20.48
+2025-11-11 17:31:18,945 - INFO - Use pytorch device_name: cpu
+2025-11-11 17:31:18,946 - INFO - Load pretrained SentenceTransformer: pritamdeka/S-PubMedBert-MS-MARCO
+2025-11-11 17:32:03,653 - INFO - llm_rank_trials provider=LOCAL_HEURISTIC model=llama3 time_sec=0.00

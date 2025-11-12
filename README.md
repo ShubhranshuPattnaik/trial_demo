@@ -37,12 +37,17 @@ export ES_BM25_INDEX="trials_bm25"
 export ES_VECTOR_INDEX="trials_vector"
 export ES_VECTOR_FIELD="embedding"     # MUST match vector mapping name in ES
 
+docker run --name es-trials --rm -p 9200:9200 -p 9300:9300 \
+  -e discovery.type=single-node \
+  -e xpack.security.enabled=false \
+  -e ES_JAVA_OPTS="-Xms1g -Xmx1g" \
+  docker.elastic.co/elasticsearch/elasticsearch:8.15.0
 
 # ── Embedder ─────────────────────────────────────────────────────────────
 export EMBEDDER_TYPE="pubmedbert"      # or "sentence-transformer" if installed
 
-# ── Unified Final-score weights (optional) ───────────────────────────────
-export FINAL_ALPHA="0.0"               # v0: eligibility = hybrid_norm → alpha can be 0
+# ── Unified Final-score weights (optional) ───────────────────────────────  # v0: eligibility = hybrid_norm → alpha can be 0
+export FINAL_ALPHA="0.0"              
 export FINAL_BETA="0.7"
 export FINAL_GAMMA="0.3"
 ```
@@ -328,4 +333,292 @@ curl -s -X POST "$BASE/search" -H "Content-Type: application/json" -d '{
   "filters": { "phase": ["Phase 2","Phase 3"] },
   "top_k": 10
 }' | jq .
+```
+
+
+## Eligibility Atom Extraction & LLM Integration
+1. Run the API 
+```bash
+EMBEDDER_TYPE=pubmedbert uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+2. API Endpoint: /extract/eligibility-atoms
+
+- Request structure
+
+```bash
+POST /extract/eligibility-atoms
+Content-Type: application/json
+{
+  "eligibility_text": "<raw ct.gov eligibility section>"
+}
+```
+
+3. Example Curl:
+```bash
+curl -s -X POST http://localhost:8000/extract/eligibility-atoms \
+  -H "Content-Type: application/json" \
+  -d @- <<'JSON' | jq .
+{
+  "eligibility_text": "Inclusion Criteria:\n- Age 18 to 75 years\n- ECOG <= 1\n- ANC >= 1.5 x 10^9/L\n- Platelets >= 100000 /uL\n- Hemoglobin >= 9 g/dL\n- Bilirubin <= 1.5 mg/dL\n- ER+ / HER2- metastatic breast cancer\n- Prior CDK4/6 inhibitor allowed\n- At least 4 weeks washout\n\nExclusion Criteria:\n- Active autoimmune disease\n- Prior pembrolizumab not allowed\n- Uncontrolled brain metastases"
+}
+JSON
+```
+
+## Elasticsearch Snapshots (share BM25 + Vector indexes)
+https://drive.google.com/drive/folders/1uWvSfNnuMGLEMNceEYa_B0yIcPzhR7kQ?usp=sharing 
+# 1 Unpack snapshot into a host folder
+```bash
+mkdir -p "$HOME/docker/essnapshots"
+tar -xzf ~/trials_es_snapshots.tgz -C "$HOME/docker/essnapshots"
+```
+
+# 2 Start ES with the same repo path
+```bash
+docker run -d --name es \
+  -p 9200:9200 -p 9300:9300 \
+  -e "discovery.type=single-node" \
+  -e "xpack.security.enabled=false" \
+  -e "ES_JAVA_OPTS=-Xms1g -Xmx1g" \
+  -e "path.repo=/snapshots" \
+  -v "$HOME/docker/essnapshots:/snapshots" \
+  docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+```
+
+# 3 Register the repository name
+```bash
+curl -s -X PUT 'http://localhost:9200/_snapshot/local_backup' \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"fs","settings":{"location":"/snapshots","compress":true}}'
+```
+
+# 4 Inspect available snapshots
+```bash
+curl -s 'http://localhost:9200/_snapshot/local_backup/_all' | jq '.snapshots[].snapshot'
+```
+
+# 5 Restore (delete existing indices first or restore with rename)
+# Delete if they already exist:
+```bash
+curl -X DELETE 'http://localhost:9200/trials_bm25'
+curl -X DELETE 'http://localhost:9200/trials_vector'
+```
+
+# Restore under original names:
+```bash
+curl -s -X POST "http://localhost:9200/_snapshot/local_backup/$SNAP/_restore" \
+  -H 'Content-Type: application/json' \
+  -d '{"indices":"trials_bm25,trials_vector","include_global_state":false}'
+```
+
+# 6 Verify
+```bash
+curl -s 'http://localhost:9200/_cat/indices?v'
+curl -s 'http://localhost:9200/_cat/count/trials_bm25?v'
+curl -s 'http://localhost:9200/_cat/count/trials_vector?v'
+```
+
+
+### API: /search/hybrid_v2 - Integration data is passed to LLM
+```bash
+curl -s -X POST "http://localhost:8000/search/hybrid_v2" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "patient_text": "62-year-old with metastatic melanoma previously treated with PD-1 inhibitor; looking for immunotherapy trials.",
+    "top_k": 5,
+    "include_evidence": true,
+    "include_eligibility_text": false
+  }' | jq .
+  ```
+
+  Reponse:
+  ```bash
+  {
+  "schema": { ... JSON Schema for TrialAtoms ... },
+  "patient_text": "…",
+  "results": [
+    {
+      "trial_id": "NCT01234567",
+      "title": "…",
+      "scores": { "bm25": 0.015, "vector": 0.014, "rrf": 0.029 },
+      "trial_atoms": { "... full extracted atoms ..." },
+      "evidence": {
+        "inclusion_items": ["Age ≥ 18 years", "ECOG ≤ 1", "..."],
+        "exclusion_items": ["Active autoimmune disease", "..."]
+      },
+      "eligibility_text": null
+    }
+  ],
+  "integration_data": {
+    "patient_text": "…",
+    "trials": [
+      {
+        "trial_id": "NCT01234567",
+        "title": "…",
+        "atoms_subset": {
+          "age": { "min_years": 18, "max_years": null },
+          "sex": "all",
+          "performance": { "ecog_max": 1 },
+          "biomarkers": { "require": ["HER2-"], "exclude": [] },
+          "prior_therapies": { "allow": ["PD-1 inhibitor"], "disallow": [] },
+          "comorbid_exclusions": ["active autoimmune disease"],
+          "lab_thresholds": { "hemoglobin_g_dL_min": 9.0, "...": null }
+        },
+        "quotes": { "performance": "ECOG 0–1 …", "lab_thresholds": "Hgb ≥ 9 g/dL …" },
+        "evidence": { "inclusion_items": ["…"], "exclusion_items": ["…"] },
+        "retrieval": { "bm25": 0.015, "vector": 0.014, "rrf": 0.029 }
+      }
+    ]
+  }
+}
+
+## LLM Overview 
+
+- feat(llm): add /llm/rank endpoint + local Ollama integration
+
+- New LLM ranking flow:
+  - /search/hybrid_v2 now returns integration_data
+  - /llm/rank accepts either {integration_data} or the full hybrid_v2 payload
+  - Produces {verdict, eligibility_score, unmet_criteria, notes} per trial
+- Added health probe /llm/health (reports provider/model)
+- Ranker prefers Ollama when configured; falls back to heuristic if unreachable
+- README: added LLM Quickstart (Ollama/OpenAI), end-to-end test commands
+- requirements.txt: updated with FastAPI/UVicorn, elasticsearch, sentence-transformers,
+  psycopg[binary], and optional openai/ollama clients
+
+Notes:
+- Ensure ES indices exist (trials_bm25, trials_vector)
+- For local LLM testing: `ollama serve` + `ollama pull llama3:8b`, then
+  `LLM_PROVIDER=OLLAMA LLM_MODEL=llama3:8b uvicorn api.main:app`
+
+
+#Start — Run LLM Ranking Locally
+
+```bash
+# --- 1. Install & start Ollama (macOS) ---
+brew install ollama
+ollama serve          # keep running in separate terminal
+ollama pull llama3:8b # one-time model download
+
+# --- 2. From project root ---
+export ES_URL=http://localhost:9200
+export ES_BM25_INDEX=trials_bm25
+export ES_VECTOR_INDEX=trials_vector
+
+# --- 3. Select LLM provider ---
+# Local (Ollama)
+export LLM_PROVIDER=OLLAMA
+export LLM_MODEL="llama3:8b"
+
+# (or) OpenAI cloud
+# export LLM_PROVIDER=OPENAI
+# export LLM_MODEL="gpt-4o-mini"
+# export OPENAI_API_KEY=sk-...
+
+# --- 4. Start the API ---
+python3 -m uvicorn api.main:app --reload --port 8000
+
+# --- 5. Verify ---
+# API health:  http://127.0.0.1:8000/health
+# LLM health:  http://127.0.0.1:8000/llm/health
+```
+
+Then test end-to-end:
+
+1. `POST /search/hybrid_v2` → copy `integration_data`
+2. `POST /llm/rank` → paste the copied object under `integration_data`
+
+---
+
+## LLM Eligibility Ranking (Ollama / OpenAI)
+
+### Setup
+
+**Choose your provider:**
+
+**Local (Ollama)**
+
+```bash
+brew install ollama
+ollama serve
+ollama pull llama3:8b
+```
+
+**OpenAI**
+
+```bash
+export OPENAI_API_KEY=sk-...
+```
+
+### Run API with LLM Enabled
+
+```bash
+export ES_URL=http://localhost:9200
+export ES_BM25_INDEX=trials_bm25
+export ES_VECTOR_INDEX=trials_vector
+
+#For Ollama
+export LLM_PROVIDER=OLLAMA
+export LLM_MODEL="llama3:8b"
+
+# Or for OpenAI
+# export LLM_PROVIDER=OPENAI
+# export LLM_MODEL="gpt-4o-mini"
+
+python3 -m uvicorn api.main:app --reload --port 8000
+```
+
+**Health checks**
+
+* `http://127.0.0.1:8000/health` → check ES indices
+* `http://127.0.0.1:8000/llm/health` → verify provider & model
+
+### End-to-End Test
+
+**Step 1 — Retrieve candidate trials**
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/search/hybrid_v2" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "patient_text": "62-year-old with metastatic melanoma previously treated with a PD-1 inhibitor; ECOG 1; seeking immunotherapy.",
+    "top_k": 5,
+    "include_evidence": true
+  }' | jq .
+```
+
+**Step 2 — LLM rank**
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/llm/rank" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "integration_data": {
+      "patient_text": "62-year-old with metastatic melanoma previously treated with a PD-1 inhibitor; ECOG 1; seeking immunotherapy.",
+      "trials": [
+        {"trial_id": "LOCAL_0", "retrieval": {"bm25": 1e-9, "vector": 0.01639, "rrf": 0.01639}},
+        {"trial_id": "LOCAL_1", "retrieval": {"bm25": 1e-9, "vector": 0.01613, "rrf": 0.01613}}
+      ]
+    }
+  }' | jq .
+```
+
+**Expected Response:**
+
+```json
+{
+  "trial_id": "...",
+  "verdict": "include | exclude | unsure",
+  "eligibility_score": 0.0-1.0,
+  "unmet_criteria": [],
+  "notes": "short rationale"
+}
+```
+
+**Troubleshooting:**
+
+* If you see `heuristic fallback`, verify that `LLM_PROVIDER=OLLAMA` is exported and `ollama serve` is running.
+* To confirm inference: check logs for `provider=OLLAMA model=llama3:8b time_sec=...`
+
+
 ```
